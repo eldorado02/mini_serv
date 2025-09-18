@@ -6,11 +6,71 @@
 /*   By: arafaram <arafaram@student.42antananari    +#+  +:+       +#+        */
 /*                                                +#+#+#+#+#+   +#+           */
 /*   Created: 2025/09/18 08:07:44 by arafaram          #+#    #+#             */
-/*   Updated: 2025/09/18 10:40:33 by arafaram         ###   ########.fr       */
+/*   Updated: 2025/09/18 15:03:52 by arafaram         ###   ########.fr       */
 /*                                                                            */
 /* ************************************************************************** */
 
 #include "mini_serv.h"
+
+unsigned short	ft_htons(unsigned short port)
+{
+	return ((port >> 8) | (port << 8));
+}
+
+unsigned int	ft_htonl(unsigned int addr)
+{
+	return ((addr & 0xff000000) >> 24 |
+			(addr & 0x00ff0000) >> 8 | 
+			(addr & 0x0000ff00) << 8 |
+			(addr & 0x000000ff) << 24  );
+}
+
+void	init_fd(t_env *env)
+{
+	int	i;
+	int	max_fd;
+
+	i = 0;
+	max_fd = env->listen_socket;
+	FD_ZERO(&(env->readfds));
+	FD_ZERO(&(env->writefds));
+	FD_SET(env->listen_socket, &(env->readfds));
+	while (i < 2048)
+	{
+		if (env->client[i].fd != 0)
+		{
+			FD_SET(env->client[i].fd, &(env->readfds));
+			if (env->client[i].buf_to_flush != NULL && strlen(env->client[i].buf_to_flush) != 0)
+				FD_SET(env->client[i].fd, &(env->writefds));	
+			if (env->client[i].buffer_write != NULL && strlen(env->client[i].buffer_write) != 0)
+				FD_SET(env->client[i].fd, &(env->writefds));	
+			if (env->client[i].fd > max_fd)
+				max_fd = env->client[i].fd;
+		}
+		i++;
+	}
+	env->nfds = max_fd + 1;
+}
+
+void	ft_free_all(t_env *env)
+{
+	int	i;
+
+	i = 0;
+	close(env->listen_socket);
+	while (i < 2048)
+	{
+		if (env->client[i].fd != 0)
+		{
+			free(env->client[i].buffer_read);
+			free(env->client[i].buffer_write);
+			free(env->client[i].buf_to_flush);
+			close(env->client[i].fd);
+			env->client[i].fd = 0;
+		}
+		i++;
+	}
+}
 
 char *str_join(char *buf, char *add)
 {
@@ -43,19 +103,6 @@ void	panic(const char *s)
 	exit(EXIT_FAILURE);
 }
 
-short	ft_htons(short port)
-{
-	return ((port >> 8) | (port << 8));
-}
-
-int	ft_htonl(int addr)
-{
-	return ((addr & 0xff000000) >> 24 |
-			(addr & 0x00ff0000) >> 8 | 
-			(addr & 0x0000ff00) << 8 |
-			(addr & 0x000000ff) << 24  );
-}
-
 int	init_connection(int port)
 {
 	int	sockfd;
@@ -80,47 +127,6 @@ int	init_connection(int port)
 	return (sockfd);
 }
 
-void	init_fd(t_env *env)
-{
-	int	i;
-
-	i = 0;
-	env->nfds = 0;
-	FD_ZERO(&(env->readfds));
-	FD_ZERO(&(env->writefds));
-	FD_SET(env->listen_socket, &(env->readfds));
-	while (i < 2048)
-	{
-		if (env->client[i].fd != 0)
-		{
-			FD_SET(env->client[i].fd, &(env->readfds));
-			env->nfds += 1;
-			if (env->client[i].buffer_write != NULL && strlen(env->client[i].buffer_write) != 0)
-			{
-				FD_SET(env->client[i].fd, &(env->writefds));	
-				env->nfds += 1;
-			}
-		}
-		i++;
-	}	
-}
-
-void	insert_msg_to_write_client(char * buf, int fd, t_env *env)
-{
-	int	i;
-
-	i = 0;
-	while (i < 2048)
-	{
-		if (env->client[i].fd != 0 && env->client[i].fd != fd)
-		{
-			env->client[fd].buffer_write = str_join(env->client[fd].buffer_write,
-				buf);
-		}
-		i++;
-	}
-}
-
 void	insert_msg_to_flush_client(char * buf, int fd, t_env *env)
 {
 	int	i;
@@ -130,7 +136,7 @@ void	insert_msg_to_flush_client(char * buf, int fd, t_env *env)
 	{
 		if (env->client[i].fd != 0 && env->client[i].fd != fd)
 		{
-			env->client[fd].buf_to_flush = str_join(env->client[fd].buf_to_flush,
+			env->client[i].buf_to_flush = str_join(env->client[i].buf_to_flush,
 				buf);
 		}
 		i++;
@@ -142,7 +148,6 @@ void	accept_connection(t_env *env)
 	int	fd;
 	char	buffer[100];
 
-	printf("Ye tonga tato @ accept\n");
 	fd = accept(env->listen_socket, NULL, NULL);
 	if (fd == -1)
 		panic ("Fatal Error");
@@ -157,7 +162,6 @@ void	accept_connection(t_env *env)
 void	ft_send(int fd, char *msg)
 {
 	int	n;
-	// int	i = 0;
 	int	pos = 0;
 
 	while ((size_t)pos < strlen(msg))
@@ -172,23 +176,18 @@ void	ft_send(int fd, char *msg)
 void	insert_msg2(int fd, char *buffer, t_env * env)
 {
 	int	i;
-	char	buf[20];
 
 	i = 0;
 	while (i < 2048)
 	{
 		if (env->client[i].fd != 0 && env->client[i].fd != fd)
 		{
-			sprintf(buf, "client %d: ", env->client[i].id);
-			env->client[fd].buffer_write = str_join(env->client[fd].buffer_write,
+			env->client[i].buffer_write = str_join(env->client[i].buffer_write,
 				buffer);
-			if (env->client[fd].buffer_write == NULL)
-				panic("Fatal Error\n");
-			env->client[fd].buffer_write = str_join(env->client[fd].buffer_write,
-				buffer);
-			if (env->client[fd].buffer_write == NULL)
+			if (env->client[i].buffer_write == NULL)
 				panic("Fatal Error\n");
 		}
+		i++;
 	}
 }
 
@@ -197,8 +196,7 @@ void	recv_msg(int fd, t_env *env)
 	char	buffer[4097];
 	int		n;
 
-	printf("Ye tonga tato @ recv message koa\n");	
-	n = recv(fd, buffer, 4096, 0);
+	n = recv(fd, buffer, 4097, 0);
 	if (n == 0)
 	{
 		env->client[fd].fd = 0;
@@ -206,13 +204,19 @@ void	recv_msg(int fd, t_env *env)
 		env->client[fd].buffer_read = NULL;
 		free(env->client[fd].buffer_write);
 		env->client[fd].buffer_write = NULL;
+		free(env->client[fd].buf_to_flush);
+		env->client[fd].buf_to_flush = NULL;
 		sprintf(buffer, "server: client %d just left\n", env->client[fd].id);
 		insert_msg_to_flush_client(buffer, fd, env);
+		close(fd);
 	}
 	else if (n == -1)
 		panic("Fatal Error\n");
 	else
+	{
+		buffer[n] = '\0';
 		insert_msg2(fd, buffer, env);
+	}
 }
 
 void	do_select(t_env *env)
@@ -265,6 +269,22 @@ void	create_to_flush_from_buf_write(int fd, t_env *env)
 	}
 }
 
+void	create_line_before_send(int fd, t_env * env)
+{
+	char	buf[20];
+	char	*str;
+
+	create_to_flush_from_buf_write(fd, env);
+	sprintf(buf, "client %d: ", env->client[fd].id);
+	str = (char *)malloc(strlen(buf) + strlen(env->client[fd].buf_to_flush) + 1);
+	if (str == NULL)
+		panic("Fatal Error\n");
+	strcpy(str, buf);
+	strcat(str, env->client[fd].buf_to_flush);
+	free(env->client[fd].buf_to_flush);
+	env->client[fd].buf_to_flush = str;
+}
+
 void	send_msg(int fd, t_env *env)
 {
 	if (env->client[fd].buf_to_flush != NULL)
@@ -272,12 +292,11 @@ void	send_msg(int fd, t_env *env)
 		ft_send(fd, env->client[fd].buf_to_flush); // supposons hoe lasa daholo zany
 		free(env->client[fd].buf_to_flush);
 		env->client[fd].buf_to_flush = NULL;
-		create_to_flush_from_buf_write(fd, env);
 		return ;
 	}
 	else
 	{
-		create_to_flush_from_buf_write(fd, env);
+		create_line_before_send(fd, env);
 		ft_send(fd, env->client[fd].buf_to_flush);
 		free(env->client[fd].buf_to_flush);
 		env->client[fd].buf_to_flush = NULL;
